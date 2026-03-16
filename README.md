@@ -1,4 +1,4 @@
-# clipboard-unwrap
+# clipboard-unwrap-from-terminal
 
 Fixes soft-wrapped text when copying from narrow terminal panes.
 
@@ -15,10 +15,10 @@ Runs as a macOS LaunchAgent, polling `NSPasteboard.changeCount` every 200ms (ess
 Compile:
 
 ```bash
-swiftc -O -o clipboard-unwrap clipboard-unwrap.swift
+swiftc -O -o clipboard-unwrap-from-terminal clipboard-unwrap-from-terminal.swift
 ```
 
-Create `~/Library/LaunchAgents/com.pjh.clipboard-unwrap.plist`:
+Create `~/Library/LaunchAgents/com.pjh.clipboard-unwrap-from-terminal.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -27,10 +27,10 @@ Create `~/Library/LaunchAgents/com.pjh.clipboard-unwrap.plist`:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.pjh.clipboard-unwrap</string>
+    <string>com.pjh.clipboard-unwrap-from-terminal</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/full/path/to/clipboard-unwrap</string>
+        <string>/full/path/to/clipboard-unwrap-from-terminal</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -45,7 +45,7 @@ Create `~/Library/LaunchAgents/com.pjh.clipboard-unwrap.plist`:
 Load it:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.pjh.clipboard-unwrap.plist
+launchctl load ~/Library/LaunchAgents/com.pjh.clipboard-unwrap-from-terminal.plist
 ```
 
 ## Debugging
@@ -53,8 +53,8 @@ launchctl load ~/Library/LaunchAgents/com.pjh.clipboard-unwrap.plist
 Run directly with flags:
 
 ```bash
-./clipboard-unwrap --verbose    # logs all fixes to stderr
-./clipboard-unwrap --dry-run    # logs fixes without modifying clipboard
+./clipboard-unwrap-from-terminal --verbose    # logs all fixes to stderr
+./clipboard-unwrap-from-terminal --dry-run    # logs fixes without modifying clipboard
 ```
 
 ## Known limitation
