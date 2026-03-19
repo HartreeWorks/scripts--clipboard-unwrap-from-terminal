@@ -1,19 +1,19 @@
 #!/usr/bin/env swift
 //
-// clipboard-unwrap.swift
-// Monitors the clipboard and fixes soft-wrapped text when copying from Warp.
+// clipboard-unwrap-from-terminal.swift
+// Monitors the clipboard and fixes soft-wrapped text when copying from terminal apps.
 //
-// Warp pads every line with trailing whitespace to fill the pane width. When
+// Terminals pad every line with trailing whitespace to fill the pane width. When
 // you select and copy text from a narrow pane, each soft-wrapped line becomes
 // a real newline padded with spaces. This tool detects that padding and rejoins
 // the lines, preserving blank lines as paragraph/command breaks.
 //
 // Usage: Run as a background process (LaunchAgent recommended).
-//   swift clipboard-unwrap.swift [--dry-run] [--verbose]
+//   swift clipboard-unwrap-from-terminal.swift [--dry-run] [--verbose]
 //
-// Install: compile with `swiftc -O -o clipboard-unwrap clipboard-unwrap.swift`
+// Install: compile with `swiftc -O -o clipboard-unwrap-from-terminal clipboard-unwrap-from-terminal.swift`
 //
-// Known limitation: if you copy indented code from a narrow Warp pane, the
+// Known limitation: if you copy indented code from a narrow terminal pane, the
 // indentation will be stripped. The trailing-whitespace signal can't distinguish
 // soft-wrapped prose from intentionally indented code.
 
@@ -75,40 +75,117 @@ extension String {
 
 // MARK: - Soft-wrap detection and rejoining
 
-/// Detects whether the text was copied from a narrow terminal pane.
+/// Detects whether the text was copied from a narrow terminal pane and unwraps it.
 ///
-/// Primary signal: most non-blank lines have the same total character count
-/// (content + trailing spaces), indicating a fixed pane width. This is stronger
-/// than just checking for trailing whitespace, which could match tabular output.
+/// Primary signal: most non-blank lines share the same total character count
+/// (= pane width). At least one must have trailing whitespace padding.
 ///
-/// Fallback signal: if lines don't share a uniform width but most have
-/// significant trailing whitespace padding, still treat as soft-wrapped.
+/// Two rejoining strategies depending on the trailing-whitespace distribution:
 ///
-/// Blank lines are preserved as paragraph/command breaks (collapsed to single breaks).
+/// **Gap-based mode** — the trailing-whitespace values cluster into two groups
+/// (small gaps = continuations, large gaps = logical line endings). Typical for
+/// wrapped URLs or long tokens. Continuations are concatenated without spaces.
+///
+/// **Paragraph mode** — all lines have similar trailing padding (no clear gap
+/// between continuation and end-of-line). Classic prose / command wrapping.
+/// Lines are joined with spaces; blank lines become paragraph breaks.
 func fixSoftWrap(_ text: String) -> String? {
     let lines = text.components(separatedBy: "\n")
 
     let nonBlankLines = lines.filter { !$0.trimmingTrailingWhitespace().isEmpty }
     guard nonBlankLines.count >= 2 else { return nil }
 
-    // Primary check: do most lines share the same total length (= pane width)?
-    // This is the strongest signal for terminal soft-wrap.
+    // Detect pane width: most common line length among non-blank lines.
     let lengths = nonBlankLines.map { $0.count }
     let lengthCounts = Dictionary(lengths.map { ($0, 1) }, uniquingKeysWith: +)
-    let (mostCommonLength, mostCommonCount) = lengthCounts.max(by: { $0.value < $1.value })!
-    let uniformRatio = Double(mostCommonCount) / Double(nonBlankLines.count)
+    let (paneWidth, modeCount) = lengthCounts.max(by: { $0.value < $1.value })!
+    let uniformRatio = Double(modeCount) / Double(nonBlankLines.count)
 
-    // Lines at the uniform width must also have trailing whitespace (not just
-    // coincidentally the same content length)
-    let uniformAndPadded = uniformRatio >= paddedLineRatio
-        && nonBlankLines.filter({ $0.count == mostCommonLength }).allSatisfy({ $0.trailingWhitespaceCount >= trailingWsThreshold })
+    guard uniformRatio >= paddedLineRatio else { return nil }
 
-    guard uniformAndPadded else { return nil }
+    let linesAtPaneWidth = nonBlankLines.filter { $0.count == paneWidth }
+
+    // At least one line must show trailing-whitespace padding to confirm
+    // this really is terminal-padded text.
+    let hasPaddedLine = linesAtPaneWidth.contains {
+        $0.trailingWhitespaceCount >= trailingWsThreshold
+    }
+    guard hasPaddedLine else { return nil }
 
     let stripped = lines.map { $0.trimmingTrailingWhitespace() }
+    let nonBlankStripped = stripped.filter { !$0.trimmingLeadingWhitespace().isEmpty }
 
-    // Rejoin consecutive non-blank lines into paragraphs.
-    // Consecutive blank lines collapse into a single paragraph break.
+    // Compute the trailing-whitespace gap (paneWidth - strippedLength) for each
+    // non-blank line.  Small gaps mean near-full content (continuation); large
+    // gaps mean short content (end of a logical line).
+    let gaps = nonBlankStripped.map { paneWidth - $0.count }
+    let sortedGaps = gaps.sorted()
+
+    // Find the first significant jump in sorted gaps to separate the two
+    // clusters.  "Significant" = jump >= minGapJump characters.
+    let minGapJump = 5
+    var gapThreshold: Int? = nil
+    for i in 0..<(sortedGaps.count - 1) {
+        let jump = sortedGaps[i + 1] - sortedGaps[i]
+        if jump >= minGapJump {
+            gapThreshold = (sortedGaps[i] + sortedGaps[i + 1]) / 2
+            break
+        }
+    }
+
+    if let threshold = gapThreshold {
+        // Clear gap between continuation lines and logical-line endings.
+        // Concatenate continuations without spaces (the wrap broke at an
+        // exact character boundary).
+        return rejoinByGapThreshold(stripped, paneWidth: paneWidth,
+                                    gapThreshold: threshold, originalText: text)
+    }
+
+    // No clear gap — all lines are similarly padded (classic prose wrapping).
+    // Fall back to paragraph-based rejoining with spaces.
+    guard linesAtPaneWidth.allSatisfy({ $0.trailingWhitespaceCount >= trailingWsThreshold }) else {
+        return nil
+    }
+    return rejoinAsParagraphs(stripped, originalText: text)
+}
+
+/// Rejoin lines using an adaptive gap threshold (for wrapped URLs / tokens).
+/// Lines with trailing-whitespace gap > threshold mark the end of a logical line.
+func rejoinByGapThreshold(_ stripped: [String], paneWidth: Int,
+                          gapThreshold: Int, originalText: String) -> String? {
+    var result: [String] = []
+    var current = ""
+    var lastBlank = false
+
+    for line in stripped {
+        let content = line.trimmingLeadingWhitespace()
+
+        if content.isEmpty {
+            if !current.isEmpty { result.append(current); current = "" }
+            if !lastBlank && !result.isEmpty { result.append("") }
+            lastBlank = true
+            continue
+        }
+        lastBlank = false
+
+        current = current.isEmpty ? content : current + content
+
+        // Gap larger than the threshold = end of a logical line.
+        let gap = paneWidth - line.count
+        if gap > gapThreshold {
+            result.append(current)
+            current = ""
+        }
+    }
+    if !current.isEmpty { result.append(current) }
+    while result.last?.isEmpty == true { result.removeLast() }
+
+    let output = result.joined(separator: "\n")
+    return output == originalText ? nil : output
+}
+
+/// Rejoin lines using blank-line paragraph detection (for padded prose).
+func rejoinAsParagraphs(_ stripped: [String], originalText: String) -> String? {
     var paragraphs: [[String]] = [[]]
     var lastWasBlank = false
 
@@ -119,16 +196,16 @@ func fixSoftWrap(_ text: String) -> String? {
             }
             lastWasBlank = true
         } else {
-            let content = line.trimmingLeadingWhitespace()
-            paragraphs[paragraphs.count - 1].append(content)
+            paragraphs[paragraphs.count - 1].append(line.trimmingLeadingWhitespace())
             lastWasBlank = false
         }
     }
 
-    return paragraphs
+    let output = paragraphs
         .filter { !$0.isEmpty }
         .map { $0.joined(separator: " ") }
         .joined(separator: "\n\n")
+    return output == originalText ? nil : output
 }
 
 // MARK: - Clipboard processing
