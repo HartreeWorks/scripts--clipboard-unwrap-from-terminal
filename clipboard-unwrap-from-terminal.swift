@@ -26,6 +26,7 @@ let terminalBundleIDs: Set<String> = [
     "dev.warp.Warp-Stable",
     "com.apple.Terminal",
     "com.googlecode.iterm2",
+    "com.google.antigravity",       // Claude Code desktop app
 ]
 let trailingWsThreshold = 3    // min trailing spaces to count as "padded"
 let paddedLineRatio = 0.5      // fraction of non-blank lines that must be padded
@@ -105,12 +106,17 @@ func fixSoftWrap(_ text: String) -> String? {
 
     let linesAtPaneWidth = nonBlankLines.filter { $0.count == paneWidth }
 
-    // At least one line must show trailing-whitespace padding to confirm
-    // this really is terminal-padded text.
+    // Confirm this is terminal-wrapped text via one of two signals:
+    // 1. At least one pane-width line has trailing whitespace padding
+    //    (Terminal.app / iTerm2 style), OR
+    // 2. Most lines are exactly the same length AND at least one line is
+    //    shorter (Warp style — no trailing whitespace, just uniform length).
     let hasPaddedLine = linesAtPaneWidth.contains {
         $0.trailingWhitespaceCount >= trailingWsThreshold
     }
-    guard hasPaddedLine else { return nil }
+    let hasUniformLengthWrap = uniformRatio >= 0.6
+        && nonBlankLines.contains { $0.count < paneWidth }
+    guard hasPaddedLine || hasUniformLengthWrap else { return nil }
 
     let stripped = lines.map { $0.trimmingTrailingWhitespace() }
     let nonBlankStripped = stripped.filter { !$0.trimmingLeadingWhitespace().isEmpty }
@@ -141,9 +147,11 @@ func fixSoftWrap(_ text: String) -> String? {
                                     gapThreshold: threshold, originalText: text)
     }
 
-    // No clear gap — all lines are similarly padded (classic prose wrapping).
+    // No clear gap — all lines are similarly padded (classic prose wrapping)
+    // or uniformly packed to pane width (Warp-style).
     // Fall back to paragraph-based rejoining with spaces.
-    guard linesAtPaneWidth.allSatisfy({ $0.trailingWhitespaceCount >= trailingWsThreshold }) else {
+    let allPadded = linesAtPaneWidth.allSatisfy({ $0.trailingWhitespaceCount >= trailingWsThreshold })
+    guard allPadded || hasUniformLengthWrap else {
         return nil
     }
     return rejoinAsParagraphs(stripped, originalText: text)
