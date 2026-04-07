@@ -216,10 +216,32 @@ func rejoinAsParagraphs(_ stripped: [String], originalText: String) -> String? {
     return output == originalText ? nil : output
 }
 
+// MARK: - Prompt stripping
+
+/// Remove leading ❯ prompt characters (e.g. from Claude Code terminal output).
+func stripPromptPrefix(_ text: String) -> String {
+    let lines = text.components(separatedBy: "\n")
+    // Only strip if at least one line starts with ❯
+    guard lines.contains(where: { $0.hasPrefix("❯") }) else { return text }
+    return lines.map { line in
+        if line.hasPrefix("❯") {
+            var s = line
+            s.removeFirst() // remove ❯
+            // Remove optional single space after the prompt
+            if s.hasPrefix(" ") { s.removeFirst() }
+            return s
+        }
+        return line
+    }.joined(separator: "\n")
+}
+
 // MARK: - Clipboard processing
 
 func processClipboard(_ text: String) -> String {
-    return fixSoftWrap(text) ?? text
+    let cleaned = stripPromptPrefix(text)
+    let result = fixSoftWrap(cleaned) ?? cleaned
+    // Return original text if nothing changed (avoid unnecessary clipboard writes)
+    return result == text ? text : result
 }
 
 // MARK: - Main loop
